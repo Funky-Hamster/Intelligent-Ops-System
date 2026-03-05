@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  mcp-service:
+    build: ./mcp_service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./docs:/vsi-ai-om/docs
+      - ./mcp_service/problems.db:/vsi-ai-om/mcp_service/problems.db
+    networks:
+      - vsi-net
+
+  ai-om-agent:
+    build: ./agent
+    ports:
+      - "8001:8000"
+    depends_on:
+      - mcp-service
+    volumes:
+      - ./docs:/vsi-ai-om/docs
+      - /var/jenkins/ssh_pass:/var/jenkins/ssh_pass
+    environment:
+      - LLM_MODEL=company_lama_70b
+    networks:
+      - vsi-net
+
+networks:
+  vsi-net:
+    driver: bridge
