@@ -37,6 +37,13 @@ def test_simplified_design():
     else:
         print("\n   ✅ 确认：不包含 pipeline_name 字段")
     
+    # 验证 resource_kind 字段存在
+    if 'resource_kind' in field_names:
+        print("   ✅ 确认：包含 resource_kind 字段")
+    else:
+        print("   ❌ 错误：缺少 resource_kind 字段!")
+        return False
+    
     # 验证 job_name 为 NOT NULL
     job_name_col = next((col for col in columns if col[1] == 'job_name'), None)
     if job_name_col and job_name_col[3]:
@@ -50,16 +57,16 @@ def test_simplified_design():
     import uuid
     
     test_records = [
-        (f"prob-{uuid.uuid4().hex[:8]}", "build failed", "build", "job-001", time.strftime("%Y-%m-%d %H:%M:%S"), "Build error log"),
-        (f"prob-{uuid.uuid4().hex[:8]}", "test failed", "test", "job-002", time.strftime("%Y-%m-%d %H:%M:%S"), "Test assertion error"),
-        (f"prob-{uuid.uuid4().hex[:8]}", "deploy failed", "deploy", "job-003", time.strftime("%Y-%m-%d %H:%M:%S"), "Deployment timeout"),
-        (f"prob-{uuid.uuid4().hex[:8]}", "disk full", "jenkins-agent", "job-004", time.strftime("%Y-%m-%d %H:%M:%S"), "Disk usage 95%"),
+        (f"prob-{uuid.uuid4().hex[:8]}", "build failed", "build", "job-001", time.strftime("%Y-%m-%d %H:%M:%S"), "Build error log", "Unknown"),
+        (f"prob-{uuid.uuid4().hex[:8]}", "test failed", "test", "job-002", time.strftime("%Y-%m-%d %H:%M:%S"), "Test assertion error", "Unknown"),
+        (f"prob-{uuid.uuid4().hex[:8]}", "deploy failed", "deploy", "job-003", time.strftime("%Y-%m-%d %H:%M:%S"), "Deployment timeout", "Unknown"),
+        (f"prob-{uuid.uuid4().hex[:8]}", "disk full", "jenkins-agent", "job-004", time.strftime("%Y-%m-%d %H:%M:%S"), "Disk usage 95%", "Unknown"),
     ]
     
     for record in test_records:
         try:
-            c.execute("INSERT INTO problems VALUES (?, ?, ?, ?, ?, ?)", record)
-            print(f"   ✅ 插入记录：{record[0]} (Job: {record[2]}, ID: {record[3]})")
+            c.execute("INSERT INTO problems VALUES (?, ?, ?, ?, ?, ?, ?)", record)
+            print(f"   ✅ 插入记录：{record[0]} (Job: {record[2]}, ID: {record[3]}, Resource: {record[6]})")
         except Exception as e:
             print(f"   ❌ 插入失败：{str(e)}")
             return False
@@ -92,7 +99,7 @@ def test_simplified_design():
     
     # 4. 验证数据结构
     print("\n✅ 步骤 4: 验证数据结构")
-    c.execute("SELECT id, fault_type, job_name, job_id, timestamp, evidence FROM problems LIMIT 1")
+    c.execute("SELECT id, fault_type, job_name, job_id, timestamp, evidence, resource_kind FROM problems LIMIT 1")
     r = c.fetchone()
     
     print(f"   📝 示例记录:")
@@ -102,6 +109,7 @@ def test_simplified_design():
     print(f"      - job_id: {r[3]}")
     print(f"      - timestamp: {r[4]}")
     print(f"      - evidence: {r[5][:50]}...")
+    print(f"      - resource_kind: {r[6]}")
     
     conn.close()
     
@@ -110,13 +118,15 @@ def test_simplified_design():
     print("🎉 验证通过！")
     print("="*70)
     print("\n✅ 关键结果:")
-    print(f"   1. 数据库表结构正确（6 个字段，不含 pipeline_name）")
+    print(f"   1. 数据库表结构正确（7 个字段，新增 resource_kind）")
     print(f"   2. job_name 为必填字段（NOT NULL 约束）")
-    print(f"   3. 成功插入 {len(test_records)} 条测试数据")
-    print(f"   4. 查询功能正常")
+    print(f"   3. resource_kind 字段已添加，用于标识资源类型")
+    print(f"   4. 成功插入 {len(test_records)} 条测试数据")
+    print(f"   5. 查询功能正常")
     print("\n💡 设计说明:")
     print("   - job_name: 必填字段，用于标识 Job 阶段（如 build/test/deploy）")
     print("   - job_id: Job 的唯一标识符")
+    print("   - resource_kind: 资源类型（Jenkins/Artifactory/DRP/SRO/LabOps/GitHub/IT）")
     print("   - search_problems: 只支持 fault_type + 时间范围查询")
     print("   - 简化设计：移除了不必要的 pipeline_name 和 job_name 查询参数")
     return True

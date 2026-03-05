@@ -6,7 +6,7 @@ MCP (Model Context Protocol) 客户端
 import asyncio
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
-from typing import List, Dict
+from typing import List, Dict, Optional
 import json
 import logging
 
@@ -34,7 +34,8 @@ class MCPClient:
                          fault_type: str, 
                          job_id: str, 
                          job_name: str,
-                         evidence: str) -> str:
+                         evidence: str,
+                         resource_kind: str = "Unknown") -> str:
         """
         记录故障问题到 MCP Server
         
@@ -43,6 +44,7 @@ class MCPClient:
             job_id: Job ID
             job_name: Job 名称（必填，如 build/test/deploy）
             evidence: 证据信息
+            resource_kind: 资源类型（默认：Unknown，可选：Jenkins, Artifactory, DRP, SRO, LabOps, GitHub, IT）
             
         Returns:
             Problem ID
@@ -56,7 +58,8 @@ class MCPClient:
                         "fault_type": fault_type,
                         "job_id": job_id,
                         "job_name": job_name,
-                        "evidence": evidence
+                        "evidence": evidence,
+                        "resource_kind": resource_kind
                     }
                 )
                 return result.content[0].text
@@ -102,13 +105,15 @@ class MCPClient:
                         fault_type: str, 
                         job_id: str, 
                         job_name: str,
-                        evidence: str) -> str:
+                        evidence: str,
+                        resource_kind: str = "Unknown") -> str:
         """同步版本的 log_problem"""
         return asyncio.run(self.log_problem(
             fault_type=fault_type,
             job_id=job_id,
             job_name=job_name,
-            evidence=evidence
+            evidence=evidence,
+            resource_kind=resource_kind
         ))
     
     def search_problems_sync(self, 
@@ -118,6 +123,57 @@ class MCPClient:
         """同步版本的 search_problems"""
         return asyncio.run(self.search_problems(
             fault_type=fault_type,
+            start_time=start_time,
+            end_time=end_time
+        ))
+    
+    async def get_argument_ammo(self,
+                               resource_kind: str,
+                               fault_type: str = None,
+                               days: int = 3,
+                               start_time: str = None,
+                               end_time: str = None) -> Dict:
+        """
+        获取吵架弹药包（异步版本）
+        
+        Args:
+            resource_kind: 资源类型
+            fault_type: 故障类型（可选）
+            days: 天数（默认 3）
+            start_time: 开始时间（可选）
+            end_time: 结束时间（可选）
+            
+        Returns:
+            弹药包数据（JSON）
+        """
+        async with stdio_client(self.server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "get_argument_ammo",
+                    arguments={
+                        "resource_kind": resource_kind,
+                        "fault_type": fault_type,
+                        "days": days,
+                        "start_time": start_time,
+                        "end_time": end_time
+                    }
+                )
+                # 解析 JSON 返回
+                import json
+                return json.loads(result.content[0].text)
+    
+    def get_argument_ammo_sync(self,
+                              resource_kind: str,
+                              fault_type: str = None,
+                              days: int = 3,
+                              start_time: str = None,
+                              end_time: str = None) -> Dict:
+        """同步版本的 get_argument_ammo"""
+        return asyncio.run(self.get_argument_ammo(
+            resource_kind=resource_kind,
+            fault_type=fault_type,
+            days=days,
             start_time=start_time,
             end_time=end_time
         ))

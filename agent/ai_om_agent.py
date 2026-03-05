@@ -192,11 +192,13 @@ def handle_failure(fault_type: str, job_id: str):
             # 使用同步版本（因为当前上下文不是 async）
             # job_name 必填，根据故障类型推断
             inferred_job_name = fault_type.split()[0] if fault_type else "unknown"
+            # resource_kind 默认为 Unknown
             problem_id = mcp_client.log_problem_sync(
                 fault_type=fault_type,
                 job_id=job_id,
-                job_name=inferred_job_name,  # ✅ 必填：从故障类型推断
-                evidence="\n".join(evidence)
+                job_name=inferred_job_name,
+                evidence="\n".join(evidence),
+                resource_kind="Unknown"  # 默认未知资源
             )
             send_techops_alert(problem_id, fault_type, evidence)
             return f"❌ Failed: {str(e)}. Problem logged (ID: {problem_id})"
@@ -205,11 +207,13 @@ def handle_failure(fault_type: str, job_id: str):
         # 调用 MCP 工具（安全执行）
         # job_name 必填，根据故障类型推断
         inferred_job_name = fault_type.split()[0] if fault_type else "unknown"
+        # resource_kind 默认为 Unknown
         problem_id = mcp_client.log_problem_sync(
             fault_type=fault_type,
             job_id=job_id,
-            job_name=inferred_job_name,  # ✅ 必填：从故障类型推断
-            evidence="\n".join(evidence)
+            job_name=inferred_job_name,
+            evidence="\n".join(evidence),
+            resource_kind="Unknown"  # 默认未知资源
         )
         
         # 通知 TechOps（带问题 ID）
