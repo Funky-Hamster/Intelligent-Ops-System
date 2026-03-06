@@ -1,5 +1,6 @@
 # /vsi-ai-om/mcp_service/mcp_server.py
 import datetime
+from datetime import datetime, timedelta
 
 from mcp.server.fastmcp import FastMCP
 import sqlite3
@@ -396,7 +397,7 @@ def escalate_problem(fault_type: str, days: int = 7) -> str:
     # 1. 查询历史问题（近days天内）
     problems = search_problems(
         fault_type=fault_type,
-        start_time=(datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        start_time=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     )
 
     # 2. 计算统计 & 生成文案

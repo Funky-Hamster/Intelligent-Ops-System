@@ -4,16 +4,25 @@ from typing import List, Dict, Any
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 import numpy as np
+import sys
+from pathlib import Path
+
+# 添加项目根目录到路径
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import Config
 
 
 class HybridRetriever(BaseRetriever):
-    """混合BM25 + FAISS检索器 (权重: 0.7 BM25, 0.3 FAISS)"""
+    """混合 BM25 + FAISS 检索器 (权重：alpha BM25, beta Vector)"""
 
-    def __init__(self, bm25_retriever, vector_retriever, alpha=0.7, beta=0.3):
+    def __init__(self, bm25_retriever, vector_retriever, alpha=None, beta=None):
         self.bm25_retriever = bm25_retriever
         self.vector_retriever = vector_retriever
-        self.alpha = alpha
-        self.beta = beta
+        # 使用配置文件中的默认值
+        self.alpha = alpha if alpha is not None else Config.RAG_ALPHA
+        self.beta = beta if beta is not None else Config.RAG_BETA
 
     def _get_relevant_documents(self, query: str, **kwargs) -> List[Dict]:
         # BM25检索

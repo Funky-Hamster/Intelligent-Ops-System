@@ -159,8 +159,6 @@ class MCPClient:
                         "end_time": end_time
                     }
                 )
-                # 解析 JSON 返回
-                import json
                 return json.loads(result.content[0].text)
     
     def get_argument_ammo_sync(self,

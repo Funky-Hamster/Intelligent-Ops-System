@@ -1,30 +1,41 @@
 # /vsi-ai-om/agent/ai_om_agent.py
+"""
+AI 运维 Agent - 故障自动修复
+
+功能：
+- 基于 RAG 检索解决方案
+- 自动执行修复操作（重试 Job、清理磁盘、重启 Docker）
+- 记录无法解决的问题到 MCP Service
+"""
+from typing import List
+
+import subprocess
+import os
+import logging
+
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.tools import tool
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain_community.callbacks import StdOutCallbackHandler
+from langchain.callbacks import StdOutCallbackHandler
 from langchain_community.vectorstores import Chroma
 from langchain_community.llms.tongyi import Tongyi
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
 from rag.hybrid_retriever import HybridRetriever
 from rag.build_rag import build_rag
 from mcp_service.mcp_client import MCPClient
-import subprocess
-import json
-import os
-import time
-import re
-import logging
+from config import Config
+from agent.prompt import PROMPT
 
-# 配置安全日志
+# 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 获取项目根目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 验证 API Key 配置
+# ========== API Key 验证 ==========
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 if not DASHSCOPE_API_KEY:
     raise ValueError(
@@ -33,10 +44,9 @@ if not DASHSCOPE_API_KEY:
         "  Windows PowerShell: $env:DASHSCOPE_API_KEY=\"your-api-key\"\n"
         "  Linux/Mac: export DASHSCOPE_API_KEY=\"your-api-key\""
     )
-
 print(f"✅ Qwen API Key 已加载")
 
-# 1. 初始化 RAG
+# ========== RAG 初始化 ==========
 bm25_retriever = build_rag()
 chroma_path = os.path.join(PROJECT_ROOT, "rag", "chroma_db")
 vectorstore = Chroma(
@@ -46,16 +56,36 @@ vectorstore = Chroma(
 hybrid_retriever = HybridRetriever(
     bm25_retriever=bm25_retriever,
     vector_retriever=vectorstore.as_retriever(),
-    alpha=0.7,
-    beta=0.3
+    alpha=Config.RAG_ALPHA,
+    beta=Config.RAG_BETA
 )
 
 
-# 2. 定义安全工具
+# ========== 工具函数定义 ==========
+
 @tool
 def retry_job(job_id: str, attempts: int = 3):
-    """重试 Jenkins job（安全执行）"""
+    """
+    重试 Jenkins job（安全执行）
+    
+    Args:
+        job_id: Job ID（仅允许数字和连字符）
+        attempts: 重试次数（1-10，默认 3）
+    
+    Returns:
+        str: 成功消息
+    
+    Raises:
+        ValueError: 参数验证失败
+        Exception: SSH 连接超时或执行失败
+    """
     logger.info(f"🔄 [retry_job] Retrying job {job_id} with {attempts} attempts")
+
+    # 从环境变量读取 SSH 配置（与其他工具保持一致）
+    ssh_key_path = os.getenv("JENKINS_SSH_KEY_PATH", "/var/jenkins/ssh_key")
+    ssh_user = os.getenv("JENKINS_SSH_USER", "jenkins-agent")
+    ssh_host = os.getenv("JENKINS_SSH_HOST", "agent-host")
+    known_hosts_path = os.getenv("JENKINS_KNOWN_HOSTS_PATH", "/var/jenkins/known_hosts")
 
     # 双重安全验证
     if not job_id or not isinstance(job_id, str) or not job_id.strip():
@@ -68,21 +98,47 @@ def retry_job(job_id: str, attempts: int = 3):
         raise ValueError("Invalid attempts value: must be integer between 1-10")
 
     # 使用参数化命令，避免 shell=True 和命令注入
-    cmd = [
-        "ssh", "jenkins-agent",
-        "curl", "-X", "POST", f"/job/{job_id}/retry", "--retry", str(attempts)
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # 使用完整的 Jenkins URL 和标准的 curl 命令
+    try:
+        cmd = [
+            "ssh",
+            "-i", ssh_key_path,
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={known_hosts_path}",
+            "-o", "ConnectTimeout=30",  # 添加超时配置
+            f"{ssh_user}@{ssh_host}",
+            "curl", "-X", "POST",
+            f"http://localhost:8080/job/{job_id}/build?delay=0sec",
+            "-u", "admin:${JENKINS_API_TOKEN}"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
 
-    if "SUCCESS" not in result.stdout and result.returncode != 0:
-        raise Exception(f"Retry failed: {result.stderr}")
+        # 更准确的成功判断：检查 HTTP 状态码或响应内容
+        if result.returncode != 0 or ("ERROR" in result.stdout.upper() and "SUCCESS" not in result.stdout.upper()):
+            raise Exception(f"Retry failed: {result.stderr or result.stdout}")
 
-    return f"Job {job_id} retried successfully"
+        return f"Job {job_id} retried successfully"
+    except subprocess.TimeoutExpired:
+        logger.error(f"SSH command timed out after 60 seconds")
+        raise Exception("SSH connection timed out")
+    except Exception as e:
+        logger.error(f"Retry job failed: {str(e)}")
+        raise
 
 
 @tool
 def clean_disk():
-    """清理 Jenkins agent 磁盘（仅限安全路径）"""
+    """
+    清理 Jenkins agent 磁盘（仅限安全路径）
+    
+    安全路径白名单：/var/jenkins/tmp, /tmp
+    
+    Returns:
+        str: 成功消息
+    
+    Raises:
+        Exception: SSH 连接超时或执行失败
+    """
     logger.info("🧹 [clean_disk] Cleaning disk: /var/jenkins/tmp and /tmp")
 
     # 从环境变量读取 SSH 配置
@@ -94,24 +150,39 @@ def clean_disk():
     # 安全路径白名单
     allowed_paths = ["/var/jenkins/tmp", "/tmp"]
     
-    # 使用 SSH 密钥认证，避免密码泄露
-    cmd = [
-        "ssh",
-        "-i", ssh_key_path,
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", f"UserKnownHostsFile={known_hosts_path}",
-        f"{ssh_user}@{ssh_host}",
-        "rm", "-rf"
-    ] + allowed_paths
-    
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-
-    return "Disk cleaned successfully"
+    try:
+        # 使用 SSH 密钥认证，避免密码泄露
+        cmd = [
+            "ssh",
+            "-i", ssh_key_path,
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={known_hosts_path}",
+            "-o", "ConnectTimeout=30",  # 添加超时配置
+            f"{ssh_user}@{ssh_host}",
+            "rm", "-rf"
+        ] + allowed_paths
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
+        return "Disk cleaned successfully"
+    except subprocess.TimeoutExpired:
+        logger.error(f"SSH command timed out after 60 seconds")
+        raise Exception("SSH connection timed out")
+    except Exception as e:
+        logger.error(f"Clean disk failed: {str(e)}")
+        raise
 
 
 @tool
 def restart_docker():
-    """重启 Docker 服务（安全执行）"""
+    """
+    重启 Docker 服务（安全执行）
+    
+    Returns:
+        str: 成功消息
+    
+    Raises:
+        Exception: SSH 连接超时或执行失败
+    """
     logger.info("🐳 [restart_docker] Restarting Docker service")
 
     # 从环境变量读取 SSH 配置
@@ -120,43 +191,63 @@ def restart_docker():
     ssh_host = os.getenv("JENKINS_SSH_HOST", "agent-host")
     known_hosts_path = os.getenv("JENKINS_KNOWN_HOSTS_PATH", "/var/jenkins/known_hosts")
 
-    # 使用 SSH 密钥认证，强制主机密钥验证
-    cmd = [
-        "ssh",
-        "-i", ssh_key_path,
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", f"UserKnownHostsFile={known_hosts_path}",
-        f"{ssh_user}@{ssh_host}",
-        "systemctl", "restart", "docker"
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        # 使用 SSH 密钥认证，强制主机密钥验证
+        cmd = [
+            "ssh",
+            "-i", ssh_key_path,
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={known_hosts_path}",
+            "-o", "ConnectTimeout=30",  # 添加超时配置
+            f"{ssh_user}@{ssh_host}",
+            "systemctl", "restart", "docker"
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=60)
+        return "Docker restarted successfully"
+    except subprocess.TimeoutExpired:
+        logger.error(f"SSH command timed out after 60 seconds")
+        raise Exception("SSH connection timed out")
+    except Exception as e:
+        logger.error(f"Restart docker failed: {str(e)}")
+        raise
 
-    return "Docker restarted successfully"
 
-
-# 3. 初始化 Agent（使用 Qwen 大模型）
+# ========== Agent 初始化 ==========
 llm = Tongyi(
-    model="qwen-max",  # 使用 Qwen-Max 模型
-    max_tokens=512,
-    temperature=0.0,
+    model=Config.LLM_MODEL,
+    max_tokens=Config.LLM_MAX_TOKENS,
+    temperature=Config.LLM_TEMPERATURE_AGENT,
     verbose=True,
     dashscope_api_key=DASHSCOPE_API_KEY
 )
-
-print(f"✅ Qwen 模型初始化成功 (model: qwen-max)")
+print(f"✅ Qwen 模型初始化成功 (model: {Config.LLM_MODEL})")
 
 tools = [retry_job, clean_disk, restart_docker]
 agent = create_react_agent(llm, tools, PROMPT)
-agent_executor = AgentExecutor(agent=agent, tools=tools, callbacks=[StdOutCallbackHandler()])
+agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    callbacks=[StdOutCallbackHandler()]
+)
 
-# 4. MCP Service 客户端（Model Context Protocol）
+# MCP Service 客户端
 mcp_client = MCPClient("mcp_service/mcp_server.py")
 
 
-# 5. 主处理函数
-def handle_failure(fault_type: str, job_id: str):
-    """故障处理闭环"""
-    # 1. RAG检索解决方案
+# ========== 核心业务逻辑 ==========
+
+def handle_failure(fault_type: str, job_id: str) -> str:
+    """
+    故障处理闭环
+    
+    Args:
+        fault_type: 故障类型
+        job_id: Job ID
+    
+    Returns:
+        str: 处理结果
+    """
+    # 1. RAG 检索解决方案
     results = hybrid_retriever.get_relevant_documents(fault_type)
 
     # 2. 通过Agent生成工具调用
@@ -224,9 +315,19 @@ def handle_failure(fault_type: str, job_id: str):
 
 
 
-# 6. 辅助函数
+# ========== 辅助函数 ==========
+
 def collect_evidence(fault_type: str, job_id: str) -> List[str]:
-    """收集故障证据（精确到文件内容）"""
+    """
+    收集故障证据（精确到文件内容）
+    
+    Args:
+        fault_type: 故障类型
+        job_id: Job ID
+    
+    Returns:
+        List[str]: 证据列表
+    """
     evidence = []
     if fault_type == "500 error":
         evidence.append("log: /var/log/techops/error.log (content: '500: Service timeout')")
@@ -238,19 +339,27 @@ def collect_evidence(fault_type: str, job_id: str) -> List[str]:
 
 
 def send_techops_alert(problem_id: str, fault_type: str, evidence: List[str]):
-    """发送 TechOps 通知（MCP Service）"""
+    """
+    发送 TechOps 通知（MCP Service）
+    
+    Args:
+        problem_id: 问题 ID
+        fault_type: 故障类型
+        evidence: 证据列表
+    """
     print(f"📧 [TechOps Alert] {fault_type} (Problem ID: {problem_id})")
-    print("  Evidence:", evidence)
+    print(f"  Evidence: {evidence}")
 
 
-# 7. 验证用例
+# ========== 主程序入口 ==========
+
 if __name__ == "__main__":
-    # 测试用例：disk full故障
+    # 测试用例：disk full 故障
     print("\n🧪 Running test case: disk full")
     result = handle_failure("disk full", "job-123")
     assert "Disk cleaned successfully" in result
 
-    # 测试用例：500 error故障
+    # 测试用例：500 error 故障
     print("\n🧪 Running test case: 500 error")
     result = handle_failure("500 error", "job-456")
     assert "retried successfully" in result

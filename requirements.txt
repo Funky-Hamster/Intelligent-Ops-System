@@ -26,7 +26,7 @@ uvicorn>=0.23.0
 mcp>=0.1.0
 
 # 工具函数
-python-dotenv>=1.0.0    # 环境变量管理（可选）
+python-dotenv>=1.0.0    # 环境变量管理
 requests>=2.31.0
 
 # 测试（可选）
