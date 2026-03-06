@@ -28,6 +28,7 @@ mcp>=0.1.0
 # 工具函数
 python-dotenv>=1.0.0    # 环境变量管理
 requests>=2.31.0
+schedule>=1.2.0         # 定时任务调度器
 
 # 测试（可选）
 pytest>=7.4.0
