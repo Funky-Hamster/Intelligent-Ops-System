@@ -64,6 +64,46 @@ class MCPClient:
                 )
                 return result.content[0].text
     
+    async def log_retry_failure(self,
+                               job_id: str,
+                               job_name: str,
+                               retry_action: str,
+                               failure_reason: str,
+                               suggestion: str = None) -> str:
+        """
+        记录重试失败的案例到 MCP Server（用于追踪 TechOps 服务问题）
+        
+        Args:
+            job_id: Job ID
+            job_name: Job 名称
+            retry_action: 重试操作（如：retry_job, restart_docker）
+            failure_reason: 失败原因
+            suggestion: AI 建议（可选）
+            
+        Returns:
+            Problem ID
+        """
+        async with stdio_client(self.server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                
+                # 构建详细的证据信息
+                evidence = f"Retry Action: {retry_action}\nFailure Reason: {failure_reason}"
+                if suggestion:
+                    evidence += f"\nAI Suggestion: {suggestion}"
+                
+                result = await session.call_tool(
+                    "log_problem",
+                    arguments={
+                        "fault_type": "RetryFailure",
+                        "job_id": job_id,
+                        "job_name": job_name,
+                        "evidence": evidence,
+                        "resource_kind": "Jenkins"
+                    }
+                )
+                return result.content[0].text
+    
     async def search_problems(self, 
                              fault_type: Optional[str] = None,
                              start_time: Optional[str] = None,
